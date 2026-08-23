@@ -1,0 +1,141 @@
+import http from "node:http";
+
+const PORT = process.env.PORT || 3000;
+const NIGHTSCOUT_URL = process.env.NIGHTSCOUT_URL;
+const NIGHTSCOUT_TOKEN = process.env.NIGHTSCOUT_TOKEN;
+
+if (!NIGHTSCOUT_URL || !NIGHTSCOUT_TOKEN) {
+  throw new Error("Missing NIGHTSCOUT_URL or NIGHTSCOUT_TOKEN");
+}
+
+function mgdlToMmol(mgdl) {
+  return mgdl / 18.0;
+}
+
+function round(value, places = 1) {
+  const factor = 10 ** places;
+  return Math.round(value * factor) / factor;
+}
+
+function calculateSummary(entries) {
+  const values = entries
+    .filter((e) => typeof e.sgv === "number")
+    .map((e) => e.sgv);
+
+  if (!values.length) {
+    return {
+      readings: 0,
+      error: "No SGV readings found"
+    };
+  }
+
+  const mmol = values.map(mgdlToMmol);
+
+  const mean =
+    mmol.reduce((sum, value) => sum + value, 0) / mmol.length;
+
+  const variance =
+    mmol.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+    mmol.length;
+
+  const sd = Math.sqrt(variance);
+  const cv = mean > 0 ? (sd / mean) * 100 : null;
+
+  const below54 = mmol.filter((v) => v < 3.0).length;
+  const below70 = mmol.filter((v) => v < 3.9).length;
+  const inRange = mmol.filter((v) => v >= 3.9 && v <= 10.0).length;
+  const above180 = mmol.filter((v) => v > 10.0).length;
+  const above250 = mmol.filter((v) => v > 13.9).length;
+
+  const pct = (count) => round((count / mmol.length) * 100, 1);
+
+  return {
+    period_hours_approx: round((entries.length * 5) / 60, 1),
+    readings: mmol.length,
+    mean_mmol: round(mean, 1),
+    min_mmol: round(Math.min(...mmol), 1),
+    max_mmol: round(Math.max(...mmol), 1),
+    sd_mmol: round(sd, 1),
+    cv_pct: cv === null ? null : round(cv, 1),
+    time_below_3_0_pct: pct(below54),
+    time_below_3_9_pct: pct(below70),
+    time_in_range_3_9_to_10_pct: pct(inRange),
+    time_above_10_pct: pct(above180),
+    time_above_13_9_pct: pct(above250),
+    newest: entries[0]
+      ? {
+          dateString: entries[0].dateString,
+          sgv_mgdl: entries[0].sgv,
+          sgv_mmol: round(mgdlToMmol(entries[0].sgv), 1),
+          direction: entries[0].direction
+        }
+      : null,
+    oldest: entries.at(-1)
+      ? {
+          dateString: entries.at(-1).dateString,
+          sgv_mgdl: entries.at(-1).sgv,
+          sgv_mmol: round(mgdlToMmol(entries.at(-1).sgv), 1),
+          direction: entries.at(-1).direction
+        }
+      : null
+  };
+}
+
+async function fetchEntries() {
+  const base = NIGHTSCOUT_URL.replace(/\/$/, "");
+  const url =
+    `${base}/api/v1/entries.json?count=288&token=` +
+    encodeURIComponent(NIGHTSCOUT_TOKEN);
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json"
+    }
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Nightscout returned ${response.status}: ${text.slice(0, 300)}`
+    );
+  }
+
+  return response.json();
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    if (req.url === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
+
+    if (req.url === "/summary") {
+      const entries = await fetchEntries();
+      const summary = calculateSummary(entries);
+
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "cache-control": "no-store"
+      });
+
+      res.end(JSON.stringify(summary, null, 2));
+      return;
+    }
+
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "Not found" }));
+  } catch (error) {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error: error.message
+      })
+    );
+  }
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Listening on port ${PORT}`);
+});
