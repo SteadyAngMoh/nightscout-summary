@@ -158,6 +158,37 @@ Allow: /`
     `);
     return;
   }
+
+  if (requestUrl.pathname === "/api/v1/entries.json") {
+    const count = Math.min(
+      Math.max(Number(requestUrl.searchParams.get("count") || 1), 1),
+      288
+    );
+
+    const entries = await fetchEntries(count);
+
+    const output = entries.map((e) => ({
+      _id: e._id,
+      device: e.device,
+      date: e.date,
+      dateString: e.dateString,
+      sgv: e.sgv,
+      delta: e.delta,
+      direction: e.direction,
+      type: e.type || "sgv",
+      sysTime: e.sysTime,
+      utcOffset: e.utcOffset,
+      mills: e.mills
+    }));
+
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "cache-control": "no-store"
+    });
+
+    res.end(JSON.stringify(output));
+    return;
+  }
     
     if (requestUrl.pathname === "/summary") {
       const entries = await fetchEntries(288);
