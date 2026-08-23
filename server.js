@@ -116,6 +116,49 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+      if (requestUrl.pathname === "/robots.txt") {
+    res.writeHead(200, {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "public, max-age=3600"
+    });
+
+    res.end(
+`User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: *
+Allow: /`
+    );
+    return;
+  }
+
+  if (requestUrl.pathname === "/") {
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "public, max-age=300"
+    });
+
+    res.end(`
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Glucose Data API</title>
+</head>
+<body>
+  <h1>Glucose Data API</h1>
+  <p>Read-only glucose data endpoint.</p>
+  <p><a href="/summary">24-hour glucose summary</a></p>
+  <p><a href="/readings?hours=24">24-hour glucose readings</a></p>
+</body>
+</html>
+    `);
+    return;
+  }
+    
     if (requestUrl.pathname === "/summary") {
       const entries = await fetchEntries(288);
       const summary = calculateSummary(entries);
