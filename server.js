@@ -108,7 +108,9 @@ function makeReadings(entries) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    const requestUrl = new URL(req.url, `http://${req.headers.host}`);
+const requestUrl = new URL(req.url, `http://${req.headers.host}`);
+
+console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
 
     if (requestUrl.pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
