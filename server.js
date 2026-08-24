@@ -282,7 +282,7 @@ Allow: /`
         return;
       }
 
-            /*
+               /*
        * NIGHTSCOUT V2 PROPERTIES
        *
        * Required by the M5Stack.
@@ -295,6 +295,42 @@ Allow: /`
         const base =
           NIGHTSCOUT_URL.replace(/\/$/, "");
 
+        // Exchange the long-lived Nightscout access token
+        // for a temporary JWT.
+        const authUrl =
+          `${base}/api/v2/authorization/request/` +
+          encodeURIComponent(NIGHTSCOUT_TOKEN);
+
+        const authResponse =
+          await fetch(authUrl, {
+            headers: {
+              Accept: "application/json"
+            }
+          });
+
+        if (!authResponse.ok) {
+          const text =
+            await authResponse.text();
+
+          throw new Error(
+            `Nightscout auth returned ${authResponse.status}: ${text.slice(0, 300)}`
+          );
+        }
+
+        const authData =
+          await authResponse.json();
+
+        const jwt =
+          authData.token;
+
+        if (!jwt) {
+          throw new Error(
+            "Nightscout auth did not return a JWT"
+          );
+        }
+
+        // Now call the real V2 properties endpoint
+        // using the temporary JWT.
         const upstreamUrl =
           `${base}${requestUrl.pathname}`;
 
@@ -302,8 +338,7 @@ Allow: /`
           await fetch(upstreamUrl, {
             headers: {
               Accept: "application/json",
-              Authorization:
-                `Bearer ${NIGHTSCOUT_TOKEN}`
+              Authorization: `Bearer ${jwt}`
             }
           });
 
@@ -320,16 +355,13 @@ Allow: /`
           await response.json();
 
         res.writeHead(200, {
-          "content-type":
-            "application/json",
-          "cache-control":
-            "no-store"
+          "content-type": "application/json",
+          "cache-control": "no-store"
         });
 
         res.end(JSON.stringify(data));
         return;
       }
-
       /*
        * NIGHTSCOUT STATUS
        *
