@@ -282,77 +282,44 @@ Allow: /`
         return;
       }
 
-               /*
+      /*
        * NIGHTSCOUT V2 PROPERTIES
        *
-       * Required by the M5Stack.
+       * Compatibility response for M5_NightscoutMon.
+       * We currently do not have real IOB / COB / basal data,
+       * so we return null for those and calculate delta locally.
        */
       if (
-        requestUrl.pathname.startsWith(
-          "/api/v2/properties/"
-        )
+        requestUrl.pathname ===
+        "/api/v2/properties/iob,cob,delta,basal"
       ) {
-        const base =
-          NIGHTSCOUT_URL.replace(/\/$/, "");
+        const entries = await fetchEntries(2);
 
-        // Exchange the long-lived Nightscout access token
-        // for a temporary JWT.
-        const authUrl =
-          `${base}/api/v2/authorization/request/` +
-          encodeURIComponent(NIGHTSCOUT_TOKEN);
+        const newest = entries[0] || {};
+        const previous = entries[1] || {};
 
-        const authResponse =
-          await fetch(authUrl, {
-            headers: {
-              Accept: "application/json"
-            }
-          });
+        const newestMmol =
+          typeof newest.sgv === "number"
+            ? mgdlToMmol(newest.sgv)
+            : null;
 
-        if (!authResponse.ok) {
-          const text =
-            await authResponse.text();
+        const previousMmol =
+          typeof previous.sgv === "number"
+            ? mgdlToMmol(previous.sgv)
+            : null;
 
-          throw new Error(
-            `Nightscout auth returned ${authResponse.status}: ${text.slice(0, 300)}`
-          );
-        }
+        const delta =
+          newestMmol !== null &&
+          previousMmol !== null
+            ? round(newestMmol - previousMmol, 1)
+            : 0;
 
-        const authData =
-          await authResponse.json();
-
-        const jwt =
-          authData.token;
-
-        if (!jwt) {
-          throw new Error(
-            "Nightscout auth did not return a JWT"
-          );
-        }
-
-        // Now call the real V2 properties endpoint
-        // using the temporary JWT.
-        const upstreamUrl =
-          `${base}${requestUrl.pathname}`;
-
-        const response =
-          await fetch(upstreamUrl, {
-            headers: {
-              Accept: "application/json",
-              Authorization: `Bearer ${jwt}`
-            }
-          });
-
-        if (!response.ok) {
-          const text =
-            await response.text();
-
-          throw new Error(
-            `Nightscout properties returned ${response.status}: ${text.slice(0, 300)}`
-          );
-        }
-
-        const data =
-          await response.json();
+        const data = {
+          iob: null,
+          cob: null,
+          delta: delta,
+          basal: null
+        };
 
         res.writeHead(200, {
           "content-type": "application/json",
