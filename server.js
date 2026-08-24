@@ -282,13 +282,10 @@ Allow: /`
         return;
       }
 
-      /*
+            /*
        * NIGHTSCOUT V2 PROPERTIES
        *
        * Required by the M5Stack.
-       *
-       * Example:
-       * /api/v2/properties/iob,cob,delta,basal
        */
       if (
         requestUrl.pathname.startsWith(
@@ -296,27 +293,19 @@ Allow: /`
         )
       ) {
         const base =
-          NIGHTSCOUT_URL.replace(
-            /\/$/,
-            ""
-          );
+          NIGHTSCOUT_URL.replace(/\/$/, "");
 
         const upstreamUrl =
-          `${base}${requestUrl.pathname}?token=` +
-          encodeURIComponent(
-            NIGHTSCOUT_TOKEN
-          );
+          `${base}${requestUrl.pathname}`;
 
         const response =
-          await fetch(
-            upstreamUrl,
-            {
-              headers: {
-                Accept:
-                  "application/json"
-              }
+          await fetch(upstreamUrl, {
+            headers: {
+              Accept: "application/json",
+              Authorization:
+                `Bearer ${NIGHTSCOUT_TOKEN}`
             }
-          );
+          });
 
         if (!response.ok) {
           const text =
@@ -333,15 +322,11 @@ Allow: /`
         res.writeHead(200, {
           "content-type":
             "application/json",
-
           "cache-control":
             "no-store"
         });
 
-        res.end(
-          JSON.stringify(data)
-        );
-
+        res.end(JSON.stringify(data));
         return;
       }
 
