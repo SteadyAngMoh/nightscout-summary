@@ -159,6 +159,37 @@ Allow: /`
     return;
   }
 
+  if (requestUrl.pathname === "/api/v1/status.json") {
+    const base = NIGHTSCOUT_URL.replace(/\/$/, "");
+
+    const url =
+      `${base}/api/v1/status.json?token=` +
+      encodeURIComponent(NIGHTSCOUT_TOKEN);
+
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(
+        `Nightscout status returned ${response.status}: ${text.slice(0, 300)}`
+      );
+    }
+
+    const status = await response.json();
+
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "cache-control": "no-store"
+    });
+
+    res.end(JSON.stringify(status));
+    return;
+  }
+    
   if (requestUrl.pathname === "/api/v1/entries.json") {
     const count = Math.min(
       Math.max(Number(requestUrl.searchParams.get("count") || 1), 1),
