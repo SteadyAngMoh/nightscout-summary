@@ -1,8 +1,13 @@
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const NIGHTSCOUT_TOKEN = process.env.NIGHTSCOUT_TOKEN;
 
 const GLUCOSE_URL =
   process.env.GLUCOSE_URL ||
   "https://glucose.precisionbiomodeling.com";
+
+const NIGHTSCOUT_URL =
+  process.env.NIGHTSCOUT_URL ||
+  "https://nightscout.precisionbiomodeling.com";
 
 const EMAIL_FROM =
   process.env.EMAIL_FROM ||
@@ -12,6 +17,10 @@ const EMAIL_TO = process.env.EMAIL_TO;
 
 if (!RESEND_API_KEY) {
   throw new Error("Missing RESEND_API_KEY");
+}
+
+if (!NIGHTSCOUT_TOKEN) {
+  throw new Error("Missing NIGHTSCOUT_TOKEN");
 }
 
 if (!EMAIL_TO) {
@@ -47,15 +56,135 @@ function formatPercent(value) {
   return typeof value === "number" ? `${value}%` : "—";
 }
 
-async function main() {
-  console.log("Fetching 24-hour glucose data...");
+function formatLondonTime(value) {
+  const date = new Date(value);
 
-  const [summary, readings] = await Promise.all([
-    getJson(`${GLUCOSE_URL}/summary`),
-    getJson(`${GLUCOSE_URL}/readings?hours=24`)
-  ]);
+  if (Number.isNaN(date.getTime())) {
+    return value || "Unknown time";
+  }
+
+  return date.toLocaleString("en-GB", {
+    timeZone: "Europe/London",
+    dateStyle: "short",
+    timeStyle: "short"
+  });
+}
+
+function normaliseTreatments(treatments, generatedAt) {
+  const cutoff =
+    generatedAt.getTime() - 24 * 60 * 60 * 1000;
+
+  return treatments
+    .filter((t) => {
+      const time =
+        t.created_at ||
+        t.sysTime ||
+        t.timestamp;
+
+      const parsed =
+        typeof time === "number"
+          ? time
+          : Date.parse(time);
+
+      return (
+        Number.isFinite(parsed) &&
+        parsed >= cutoff &&
+        parsed <= generatedAt.getTime()
+      );
+    })
+    .map((t) => ({
+      time:
+        t.created_at ||
+        t.sysTime ||
+        t.timestamp ||
+        null,
+
+      insulin:
+        typeof t.insulin === "number"
+          ? Math.round(t.insulin * 100) / 100
+          : null,
+
+      carbs:
+        typeof t.carbs === "number"
+          ? t.carbs
+          : null,
+
+      eventType:
+        t.eventType || null,
+
+      enteredBy:
+        t.enteredBy || null,
+
+      uuid:
+        t.uuid || null
+    }))
+    .filter(
+      (t) =>
+        t.insulin !== null ||
+        t.carbs !== null
+    )
+    .sort((a, b) => {
+      return (
+        new Date(a.time).getTime() -
+        new Date(b.time).getTime()
+      );
+    });
+}
+
+function buildTreatmentRows(treatments) {
+  if (!treatments.length) {
+    return `
+      <tr>
+        <td colspan="4">No insulin/carbohydrate treatments found in the last 24 hours.</td>
+      </tr>
+    `;
+  }
+
+  return treatments
+    .map((t) => {
+      const insulin =
+        t.insulin !== null
+          ? `${t.insulin} U`
+          : "—";
+
+      const carbs =
+        t.carbs !== null
+          ? `${t.carbs} g`
+          : "—";
+
+      return `
+        <tr>
+          <td>${escapeHtml(formatLondonTime(t.time))}</td>
+          <td>${escapeHtml(insulin)}</td>
+          <td>${escapeHtml(carbs)}</td>
+          <td>${escapeHtml(t.enteredBy || "—")}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+async function main() {
+  console.log("Fetching 24-hour glucose and treatment data...");
 
   const generatedAt = new Date();
+
+  const treatmentsUrl =
+    `${NIGHTSCOUT_URL}/api/v1/treatments.json?count=1000&token=` +
+    encodeURIComponent(NIGHTSCOUT_TOKEN);
+
+  const [summary, readings, rawTreatments] =
+    await Promise.all([
+      getJson(`${GLUCOSE_URL}/summary`),
+      getJson(`${GLUCOSE_URL}/readings?hours=24`),
+      getJson(treatmentsUrl)
+    ]);
+
+  const treatments =
+    normaliseTreatments(
+      rawTreatments,
+      generatedAt
+    );
 
   const subject =
     `Glucose 24h Report — ${generatedAt.toLocaleString("en-GB", {
@@ -65,20 +194,23 @@ async function main() {
     })}`;
 
   /*
-   * Keep the complete readings in the email.
-   * This means ChatGPT can later analyse the individual glucose
-   * measurements rather than relying only on the summary.
+   * Keep all glucose readings and treatment events in the email
+   * so ChatGPT can analyse the complete timeline later.
    */
   const rawData = JSON.stringify(
     {
       generated_at: generatedAt.toISOString(),
       period_hours: 24,
       summary,
-      readings: readings.readings || []
+      readings: readings.readings || [],
+      treatments
     },
     null,
     2
   );
+
+  const treatmentRows =
+    buildTreatmentRows(treatments);
 
   const html = `
 <!doctype html>
@@ -179,11 +311,29 @@ async function main() {
       }
     </p>
 
+    <h2>Insulin & Carbohydrate Treatments</h2>
+
+    <p>
+      ${treatments.length} treatment event(s) found in the previous 24 hours.
+    </p>
+
+    <table cellpadding="6" cellspacing="0" border="1"
+      style="border-collapse: collapse;">
+      <tr>
+        <th>Time</th>
+        <th>Insulin</th>
+        <th>Carbs</th>
+        <th>Source</th>
+      </tr>
+
+      ${treatmentRows}
+    </table>
+
     <h2>Machine-readable 24-hour dataset</h2>
 
     <p>
-      The complete glucose dataset is included below so it can be
-      analysed later.
+      The complete glucose and treatment dataset is included below
+      so it can be analysed later.
     </p>
 
     <pre style="
@@ -202,7 +352,9 @@ async function main() {
   console.log(
     `Sending report containing ${
       readings.readings?.length || 0
-    } glucose readings...`
+    } glucose readings and ${
+      treatments.length
+    } treatment events...`
   );
 
   const response = await fetch(
