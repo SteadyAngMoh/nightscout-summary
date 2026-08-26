@@ -70,6 +70,11 @@ function formatLondonTime(value) {
   });
 }
 
+function round(value, places = 1) {
+  const factor = 10 ** places;
+  return Math.round(value * factor) / factor;
+}
+
 function getTreatmentTimestamp(treatment) {
   return (
     treatment.created_at ||
@@ -101,13 +106,14 @@ function roundInsulin(value) {
   return Math.round(value * 100) / 100;
 }
 
-function filterTreatmentsLast24Hours(
+function filterTreatmentsByHours(
   rawTreatments,
-  generatedAt
+  generatedAt,
+  hours
 ) {
   const cutoff =
     generatedAt.getTime() -
-    24 * 60 * 60 * 1000;
+    hours * 60 * 60 * 1000;
 
   return rawTreatments
     .filter((t) => {
@@ -137,15 +143,14 @@ function mergePumpEvents(treatments) {
       continue;
     }
 
-    /*
-     * CareLink commonly creates separate treatment records
-     * for insulin and pump-entered carbs at the exact same time.
-     *
-     * We merge records sharing the same timestamp so the human
-     * report shows a single pump event.
-     */
-    const key =
-      new Date(time).toISOString();
+    let key;
+
+    try {
+      key =
+        new Date(time).toISOString();
+    } catch {
+      continue;
+    }
 
     if (!events.has(key)) {
       events.set(key, {
@@ -229,7 +234,7 @@ function buildPumpEventRows(
     return `
       <tr>
         <td colspan="4">
-          No pump events found in the previous 24 hours.
+          No pump events found in the previous 48 hours.
         </td>
       </tr>
     `;
@@ -276,23 +281,276 @@ function buildPumpEventRows(
     .join("");
 }
 
+function calculateDataQuality(readings, hours) {
+  const valid = readings
+    .filter(
+      (r) =>
+        r &&
+        typeof r.time === "string" &&
+        typeof r.mmol === "number"
+    )
+    .map((r) => ({
+      time: new Date(r.time),
+      mmol: r.mmol
+    }))
+    .filter(
+      (r) =>
+        !Number.isNaN(
+          r.time.getTime()
+        )
+    )
+    .sort(
+      (a, b) =>
+        a.time.getTime() -
+        b.time.getTime()
+    );
+
+  const expectedReadings =
+    Math.round(
+      hours * 12
+    );
+
+  if (!valid.length) {
+    return {
+      expected_readings:
+        expectedReadings,
+      actual_readings: 0,
+      completeness_pct: 0,
+      first_reading: null,
+      last_reading: null,
+      largest_gap_minutes: null,
+      gaps_over_10_min: 0,
+      gaps_over_20_min: 0
+    };
+  }
+
+  let largestGapMinutes = 0;
+  let gapsOver10 = 0;
+  let gapsOver20 = 0;
+
+  for (
+    let i = 1;
+    i < valid.length;
+    i += 1
+  ) {
+    const gapMinutes =
+      (
+        valid[i].time.getTime() -
+        valid[i - 1].time.getTime()
+      ) /
+      60000;
+
+    if (
+      gapMinutes >
+      largestGapMinutes
+    ) {
+      largestGapMinutes =
+        gapMinutes;
+    }
+
+    if (gapMinutes > 10) {
+      gapsOver10 += 1;
+    }
+
+    if (gapMinutes > 20) {
+      gapsOver20 += 1;
+    }
+  }
+
+  const completeness =
+    expectedReadings > 0
+      ? (
+          valid.length /
+          expectedReadings
+        ) * 100
+      : 0;
+
+  return {
+    expected_readings:
+      expectedReadings,
+
+    actual_readings:
+      valid.length,
+
+    completeness_pct:
+      round(
+        Math.min(
+          completeness,
+          100
+        ),
+        1
+      ),
+
+    first_reading:
+      valid[0].time.toISOString(),
+
+    last_reading:
+      valid[
+        valid.length - 1
+      ].time.toISOString(),
+
+    largest_gap_minutes:
+      round(
+        largestGapMinutes,
+        1
+      ),
+
+    gaps_over_10_min:
+      gapsOver10,
+
+    gaps_over_20_min:
+      gapsOver20
+  };
+}
+
+function buildDataQualityRows(
+  quality
+) {
+  return `
+    <tr>
+      <td>
+        <strong>
+          Expected readings
+        </strong>
+      </td>
+
+      <td>
+        ${escapeHtml(
+          quality.expected_readings
+        )}
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>
+          Actual readings
+        </strong>
+      </td>
+
+      <td>
+        ${escapeHtml(
+          quality.actual_readings
+        )}
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>
+          Data completeness
+        </strong>
+      </td>
+
+      <td>
+        ${escapeHtml(
+          quality.completeness_pct
+        )}%
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>
+          First reading
+        </strong>
+      </td>
+
+      <td>
+        ${escapeHtml(
+          quality.first_reading
+            ? formatLondonTime(
+                quality.first_reading
+              )
+            : "—"
+        )}
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>
+          Last reading
+        </strong>
+      </td>
+
+      <td>
+        ${escapeHtml(
+          quality.last_reading
+            ? formatLondonTime(
+                quality.last_reading
+              )
+            : "—"
+        )}
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>
+          Largest gap
+        </strong>
+      </td>
+
+      <td>
+        ${
+          quality.largest_gap_minutes !==
+          null
+            ? `${escapeHtml(
+                quality.largest_gap_minutes
+              )} min`
+            : "—"
+        }
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>
+          Gaps &gt;10 min
+        </strong>
+      </td>
+
+      <td>
+        ${escapeHtml(
+          quality.gaps_over_10_min
+        )}
+      </td>
+    </tr>
+
+    <tr>
+      <td>
+        <strong>
+          Gaps &gt;20 min
+        </strong>
+      </td>
+
+      <td>
+        ${escapeHtml(
+          quality.gaps_over_20_min
+        )}
+      </td>
+    </tr>
+  `;
+}
+
 async function main() {
   console.log(
-    "Fetching 24-hour glucose and treatment data..."
+    "Fetching 24-hour summary and 48-hour glucose/treatment data..."
   );
 
   const generatedAt =
     new Date();
 
   const treatmentsUrl =
-    `${NIGHTSCOUT_URL}/api/v1/treatments.json?count=1000&token=` +
+    `${NIGHTSCOUT_URL}/api/v1/treatments.json?count=2000&token=` +
     encodeURIComponent(
       NIGHTSCOUT_TOKEN
     );
 
   const [
-    summary,
-    readings,
+    summary24h,
+    readings48hResponse,
     rawTreatments
   ] = await Promise.all([
     getJson(
@@ -300,7 +558,7 @@ async function main() {
     ),
 
     getJson(
-      `${GLUCOSE_URL}/readings?hours=24`
+      `${GLUCOSE_URL}/readings?hours=48`
     ),
 
     getJson(
@@ -308,15 +566,26 @@ async function main() {
     )
   ]);
 
-  const treatments =
-    filterTreatmentsLast24Hours(
+  const readings48h =
+    readings48hResponse.readings ||
+    [];
+
+  const treatments48h =
+    filterTreatmentsByHours(
       rawTreatments,
-      generatedAt
+      generatedAt,
+      48
     );
 
-  const pumpEvents =
+  const pumpEvents48h =
     mergePumpEvents(
-      treatments
+      treatments48h
+    );
+
+  const dataQuality48h =
+    calculateDataQuality(
+      readings48h,
+      48
     );
 
   const subject =
@@ -325,8 +594,10 @@ async function main() {
       {
         timeZone:
           "Europe/London",
+
         dateStyle:
           "medium",
+
         timeStyle:
           "short"
       }
@@ -346,34 +617,39 @@ async function main() {
       "Do not infer a meal solely from a pump-entered carbohydrate value.",
 
     correction_detection:
-      "Do not infer whether a bolus was for food or correction unless additional evidence is available."
+      "Do not infer whether a bolus was for food or correction unless additional evidence is available.",
+
+    data_window:
+      "Headline glucose statistics cover the latest 24 hours. Raw glucose and pump data cover the latest 48 hours for context and trend reconstruction."
   };
 
-  /*
-   * Keep all source data in the email so future analysis
-   * can be re-done without relying on the human-readable table.
-   */
   const rawData =
     JSON.stringify(
       {
         generated_at:
           generatedAt.toISOString(),
 
-        period_hours: 24,
+        headline_period_hours: 24,
+
+        raw_data_period_hours: 48,
 
         interpretation_notes:
           interpretationNotes,
 
-        summary,
+        summary_24h:
+          summary24h,
 
-        readings:
-          readings.readings || [],
+        data_quality_48h:
+          dataQuality48h,
 
-        pump_events:
-          pumpEvents,
+        readings_48h:
+          readings48h,
 
-        raw_treatments:
-          treatments
+        pump_events_48h:
+          pumpEvents48h,
+
+        raw_treatments_48h:
+          treatments48h
       },
       null,
       2
@@ -381,7 +657,12 @@ async function main() {
 
   const pumpEventRows =
     buildPumpEventRows(
-      pumpEvents
+      pumpEvents48h
+    );
+
+  const dataQualityRows =
+    buildDataQualityRows(
+      dataQuality48h
     );
 
   const html = `
@@ -417,8 +698,15 @@ async function main() {
       )}
     </p>
 
+    <p>
+      Headline statistics cover the latest
+      <strong>24 hours</strong>.
+      Raw glucose and pump-event data cover the latest
+      <strong>48 hours</strong>.
+    </p>
+
     <h2>
-      Glucose Summary
+      Glucose Summary — 24 hours
     </h2>
 
     <table
@@ -439,7 +727,7 @@ async function main() {
 
         <td>
           ${escapeHtml(
-            summary.readings
+            summary24h.readings
           )}
         </td>
       </tr>
@@ -453,7 +741,7 @@ async function main() {
 
         <td>
           ${escapeHtml(
-            summary.mean_mmol
+            summary24h.mean_mmol
           )}
           mmol/L
         </td>
@@ -468,7 +756,7 @@ async function main() {
 
         <td>
           ${escapeHtml(
-            summary.min_mmol
+            summary24h.min_mmol
           )}
           mmol/L
         </td>
@@ -483,7 +771,7 @@ async function main() {
 
         <td>
           ${escapeHtml(
-            summary.max_mmol
+            summary24h.max_mmol
           )}
           mmol/L
         </td>
@@ -498,7 +786,7 @@ async function main() {
 
         <td>
           ${escapeHtml(
-            summary.sd_mmol
+            summary24h.sd_mmol
           )}
           mmol/L
         </td>
@@ -513,7 +801,7 @@ async function main() {
 
         <td>
           ${escapeHtml(
-            summary.cv_pct
+            summary24h.cv_pct
           )}%
         </td>
       </tr>
@@ -528,7 +816,7 @@ async function main() {
 
         <td>
           ${formatPercent(
-            summary
+            summary24h
               .time_in_range_3_9_to_10_pct
           )}
         </td>
@@ -543,7 +831,7 @@ async function main() {
 
         <td>
           ${formatPercent(
-            summary
+            summary24h
               .time_below_3_9_pct
           )}
         </td>
@@ -558,7 +846,7 @@ async function main() {
 
         <td>
           ${formatPercent(
-            summary
+            summary24h
               .time_below_3_0_pct
           )}
         </td>
@@ -573,7 +861,7 @@ async function main() {
 
         <td>
           ${formatPercent(
-            summary
+            summary24h
               .time_above_10_pct
           )}
         </td>
@@ -588,7 +876,7 @@ async function main() {
 
         <td>
           ${formatPercent(
-            summary
+            summary24h
               .time_above_13_9_pct
           )}
         </td>
@@ -601,10 +889,10 @@ async function main() {
 
     <p>
       ${
-        summary.newest
+        summary24h.newest
           ? `
             ${escapeHtml(
-              summary
+              summary24h
                 .newest
                 .sgv_mmol
             )}
@@ -613,7 +901,7 @@ async function main() {
             —
 
             ${escapeHtml(
-              summary
+              summary24h
                 .newest
                 .direction
             )}
@@ -621,7 +909,7 @@ async function main() {
             —
 
             ${escapeHtml(
-              summary
+              summary24h
                 .newest
                 .dateString
             )}
@@ -631,14 +919,29 @@ async function main() {
     </p>
 
     <h2>
-      Pump Events
+      Data Quality — 48 hours
+    </h2>
+
+    <table
+      cellpadding="6"
+      cellspacing="0"
+      border="1"
+      style="
+        border-collapse:
+          collapse;
+      "
+    >
+      ${dataQualityRows}
+    </table>
+
+    <h2>
+      Pump Events — 48 hours
     </h2>
 
     <p>
-      ${pumpEvents.length}
-      pump event(s) found
-      in the previous
-      24 hours.
+      ${pumpEvents48h.length}
+      pump event(s) found in
+      the previous 48 hours.
     </p>
 
     <p>
@@ -686,16 +989,15 @@ async function main() {
     </table>
 
     <h2>
-      Machine-readable
-      24-hour Dataset
+      Machine-readable Dataset
     </h2>
 
     <p>
-      The complete glucose,
+      Headline metrics cover
+      24 hours. Raw glucose,
       pump-event and raw
-      treatment dataset is
-      included below for
-      later analysis.
+      treatment data cover
+      48 hours for context.
     </p>
 
     <pre
@@ -728,12 +1030,11 @@ async function main() {
 
   console.log(
     `Sending report containing ${
-      readings.readings?.length ||
-      0
-    } glucose readings, ${
-      treatments.length
+      readings48h.length
+    } glucose readings over 48h, ${
+      treatments48h.length
     } raw treatment records and ${
-      pumpEvents.length
+      pumpEvents48h.length
     } merged pump events...`
   );
 
